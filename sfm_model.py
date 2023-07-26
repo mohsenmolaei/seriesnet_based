@@ -10,6 +10,7 @@ from torch import nn
 from torch import Tensor
 from torch import optim
 import torch.nn.functional as F
+import sfm
 import pdb
 import HSAM
 
@@ -38,7 +39,7 @@ class InputAttentionEncoder(nn.Module):
         self.M = M
         self.T = T
         
-        self.encoder_lstm = nn.LSTMCell(input_size=self.N, hidden_size=self.M)
+        self.encoder_lstm = sfm.SFM(input_size=1, hidden_size=self.M, freq_size=self.N, output_size= self.M)
         
         #equation 8 matrices
         self.W_e = nn.Linear(2*self.M, self.T)
@@ -48,30 +49,31 @@ class InputAttentionEncoder(nn.Module):
     def forward(self, inputs):
         encoded_inputs = torch.zeros((inputs.size(0), self.T, self.M)).to(device)
         #initiale hidden states
-        h_tm1 = torch.zeros((inputs.size(0), self.M)).to(device)
-        s_tm1 = torch.zeros((inputs.size(0), self.M)).to(device)
+        # h_tm1 = torch.zeros((inputs.size(0), self.M)).to(device)
+        # s_tm1 = torch.zeros((inputs.size(0), self.M)).to(device)
+        h_tm1,s_tm1,re_s,im_s,time = self.encoder_lstm.init_state()
         
         for t in range(self.T):
-            # pdb.set_trace()
+            pdb.set_trace()
             #concatenate hidden states
-            h_c_concat = torch.cat((h_tm1, s_tm1), dim=1)
-            
-            #attention weights for each k in N (equation 8)
-            x = self.W_e(h_c_concat).unsqueeze_(1).repeat(1, self.N, 1)
-            y = self.U_e(inputs.permute(0, 2, 1))
-            z = torch.tanh(x + y)
-            e_k_t = torch.squeeze(self.v_e(z))
+            # h_c_concat = torch.cat((h_tm1, s_tm1), dim=1)
+            # h_c_concat = h_c_concat.reshape(h_c_concat.shape[-2],h_c_concat.shape[-1])
+            # #attention weights for each k in N (equation 8)
+            # x = self.W_e(h_c_concat).unsqueeze_(1).repeat(1, self.N, 1) 
+            # y = self.U_e(inputs.permute(0, 2, 1))
+            # z = torch.tanh(x + y)
+            # e_k_t = torch.squeeze(self.v_e(z))
         
-            #normalize attention weights (equation 9)
-            alpha_k_t = F.softmax(e_k_t, dim=1)
+            # #normalize attention weights (equation 9)
+            # alpha_k_t = F.softmax(e_k_t, dim=1)
             
-            #weight inputs (equation 10)
-            weighted_inputs = alpha_k_t * inputs[:, t, :] 
+            # #weight inputs (equation 10)
+            # weighted_inputs = alpha_k_t * inputs[:, t, :] 
     
             #calculate next hidden states (equation 11)
-            h_tm1, s_tm1 = self.encoder_lstm(weighted_inputs, (h_tm1, s_tm1))
+            _,h_tm1, s_tm1,re_s,im_s,time = self.encoder_lstm(encoded_inputs, h_tm1,s_tm1,re_s,im_s,time )
             
-            encoded_inputs[:, t, :] = h_tm1
+            encoded_inputs[:, t, :] = h_tm1#.reshape(1000, 10)
         return encoded_inputs
     
 class TemporalAttentionDecoder(nn.Module):
@@ -93,8 +95,9 @@ class TemporalAttentionDecoder(nn.Module):
         self.T = T
         self.stateful = stateful
         
-        self.decoder_lstm = nn.LSTMCell(input_size=1, hidden_size=self.P)
-        
+        # self.decoder_lstm = nn.LSTMCell(input_size=1, hidden_size=self.P)
+        self.decoder_lstm = sfm.SFM(input_size=1, hidden_size=self.P, freq_size=20, output_size= self.P)
+
         #equation 12 matrices
         self.W_d = nn.Linear(2*self.P, self.M)
         self.U_d = nn.Linear(self.M, self.M, bias=False)
@@ -111,6 +114,8 @@ class TemporalAttentionDecoder(nn.Module):
         #initializing hidden states
         d_tm1 = torch.zeros((encoded_inputs.size(0), self.P)).to(device)
         s_prime_tm1 = torch.zeros((encoded_inputs.size(0), self.P)).to(device)
+        h_tm1,s_tm1,re_s,im_s,time = self.decoder_lstm.init_state()
+        
         for t in range(self.T):
             
             #concatenate hidden states
@@ -134,7 +139,7 @@ class TemporalAttentionDecoder(nn.Module):
             y_tilda_t = self.w_tilda(y_c_concat)
             
             #calculate next hidden states (equation 16)
-            d_tm1, s_prime_tm1 = self.decoder_lstm(y_tilda_t, (d_tm1, s_prime_tm1))
+            _,d_tm1, s_prime_tm1,re_s,im_s,time= self.decoder_lstm(y_tilda_t, d_tm1, s_prime_tm1,re_s,im_s,time)
         #concatenate context vector at step T and hidden state at step T
         d_c_concat = torch.cat((d_tm1, c_t), dim=1)
 
@@ -142,7 +147,7 @@ class TemporalAttentionDecoder(nn.Module):
         y_Tp1 = self.v_y(self.W_y(d_c_concat))
         return y_Tp1
 
-class DALSTM(nn.Module):
+class DASFM(nn.Module):
     def __init__(self, N, M, P, T, stateful_encoder=False, stateful_decoder=False):
         super(self.__class__, self).__init__()
         self.encoder = InputAttentionEncoder(N, M, T, stateful_encoder).to(device)
